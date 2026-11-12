@@ -1,0 +1,399 @@
+--[[
+    Portable Beach Speed CNP
+    - Capture tool name (same method as gravity coils)
+    - Saves the chosen gear name so it persists after leaving the game
+    - Speed only runs while that exact tool is equipped
+]]
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+local HttpService = game:GetService("HttpService")
+
+local player = Players.LocalPlayer
+local camera = Workspace.CurrentCamera
+
+local CONFIG_FILE = "beach_speedcnp.json"
+local hasFS = (type(writefile) == "function")
+          and (type(readfile)  == "function")
+          and (type(isfile)    == "function")
+
+local chosenBeach = nil
+local captureMode = false
+
+local uiEnabled = false
+local speedActive = false
+
+local offsetAmount = Vector3.new(0, 0, 5.2)
+local weightMass = 20.6
+local weightName = "CoMWeight_Object"
+local lastJumpBoostTime = 0
+local currentRotSpeed = 0
+local lastLook = camera.CFrame.LookVector
+local connections = {}
+
+local function saveConfig()
+    if not hasFS then return end
+    pcall(function()
+        writefile(CONFIG_FILE, HttpService:JSONEncode({
+            beachGear = chosenBeach,
+            uiEnabled = uiEnabled
+        }))
+    end)
+end
+
+local function loadConfig()
+    if not hasFS then return end
+    pcall(function()
+        if isfile(CONFIG_FILE) then
+            local data = HttpService:JSONDecode(readfile(CONFIG_FILE))
+            if type(data) == "table" then
+                if type(data.beachGear) == "string" and data.beachGear ~= "" then
+                    chosenBeach = data.beachGear
+                end
+                if type(data.uiEnabled) == "boolean" then
+                    uiEnabled = data.uiEnabled
+                end
+            end
+        end
+    end)
+end
+
+loadConfig()
+
+local function clearConnections()
+    for _, c in ipairs(connections) do
+        pcall(function() c:Disconnect() end)
+    end
+    table.clear(connections)
+end
+
+local function applyWeight(character)
+    local root = character:FindFirstChild("HumanoidRootPart") or character:WaitForChild("HumanoidRootPart", 3)
+    if not root then return end
+    local existing = character:FindFirstChild(weightName)
+    if existing then existing:Destroy() end
+
+    local weight = Instance.new("Part")
+    weight.Name = weightName
+    weight.Size = Vector3.new(1, 1, 1)
+    weight.Transparency = 1
+    weight.CanCollide = false
+    weight.CanQuery = false
+    weight.Massless = false
+    weight.CustomPhysicalProperties = PhysicalProperties.new(weightMass, 0.3, 0.5)
+    weight.Parent = character
+
+    local weld = Instance.new("Weld")
+    weld.Part0 = root
+    weld.Part1 = weight
+    weld.C0 = CFrame.new(offsetAmount)
+    weld.Parent = weight
+end
+
+local function removeWeight(character)
+    if character then
+        local existing = character:FindFirstChild(weightName)
+        if existing then existing:Destroy() end
+    end
+end
+
+local function isReallyInWater(humanoid)
+    if not humanoid then return false end
+    if humanoid:GetState() == Enum.HumanoidStateType.Swimming then return true end
+    if humanoid.FloorMaterial == Enum.Material.Water then return true end
+    return false
+end
+
+local function tryWaterJumpBoost()
+    if not speedActive then return end
+    local char = player.Character
+    if not char then return end
+    local root = char:FindFirstChild("HumanoidRootPart")
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not root or not hum then return end
+    if not isReallyInWater(hum) then return end
+
+    local now = tick()
+    if now - lastJumpBoostTime < 0.5 then return end
+    lastJumpBoostTime = now
+
+    local baseBoost = 29
+    local flickBonus = math.clamp(currentRotSpeed * 1.35, 0, 16)
+    local totalBoost = baseBoost + flickBonus
+    local vel = root.AssemblyLinearVelocity
+    root.AssemblyLinearVelocity = Vector3.new(vel.X, math.max(vel.Y, 0) + totalBoost, vel.Z)
+end
+
+local function startGlitch()
+    if speedActive then return end
+    speedActive = true
+    local char = player.Character
+    if char then applyWeight(char) end
+
+    connections[#connections+1] = RunService.RenderStepped:Connect(function(dt)
+        if not speedActive then return end
+        local cam = Workspace.CurrentCamera
+        local currentLook = cam.CFrame.LookVector
+        currentRotSpeed = (currentLook - lastLook).Magnitude / math.max(dt, 0.001)
+        lastLook = currentLook
+
+        local char = player.Character
+        if not char then return end
+        local root = char:FindFirstChild("HumanoidRootPart")
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if not root or not hum then return end
+
+        local moveDir = hum.MoveDirection
+        if moveDir.Magnitude > 0.1 then
+            local isMovingBack = moveDir:Dot(currentLook) < -0.35
+            if isMovingBack and currentRotSpeed > 8 then
+                local boostPower = math.clamp(currentRotSpeed * 1.15, 0, 52)
+                root.AssemblyLinearVelocity = root.AssemblyLinearVelocity + (moveDir.Unit * boostPower * dt * 42)
+            end
+        end
+    end)
+
+    connections[#connections+1] = UserInputService.InputBegan:Connect(function(input, gpe)
+        if gpe or not speedActive then return end
+        if input.KeyCode == Enum.KeyCode.Space or input.KeyCode == Enum.KeyCode.ButtonA then
+            tryWaterJumpBoost()
+        end
+    end)
+
+    if player.Character then
+        local hum = player.Character:FindFirstChildOfClass("Humanoid")
+        if hum then
+            connections[#connections+1] = hum.StateChanged:Connect(function(old, new)
+                if old == Enum.HumanoidStateType.Swimming and
+                   (new == Enum.HumanoidStateType.Jumping or new == Enum.HumanoidStateType.Freefall) then
+                    tryWaterJumpBoost()
+                end
+            end)
+        end
+    end
+end
+
+local function stopGlitch()
+    if not speedActive then return end
+    speedActive = false
+    clearConnections()
+    removeWeight(player.Character)
+end
+
+local function isBeachEquipped()
+    if not chosenBeach or not player.Character then return false end
+    for _, t in ipairs(player.Character:GetChildren()) do
+        if t:IsA("Tool") and t.Name == chosenBeach then
+            return true
+        end
+    end
+    return false
+end
+
+local function refreshState()
+    if uiEnabled and isBeachEquipped() then
+        startGlitch()
+    else
+        stopGlitch()
+    end
+end
+
+local statusLabel, toggleBtn, setGearBtn
+
+local function updateUI()
+    if not statusLabel then return end
+
+    if not chosenBeach then
+        statusLabel.Text = "No beach gear set"
+        statusLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+        setGearBtn.Text = "Set Beach Gear"
+    else
+        if isBeachEquipped() then
+            if speedActive then
+                statusLabel.Text = chosenBeach .. "  |  ACTIVE"
+                statusLabel.TextColor3 = Color3.fromRGB(70, 220, 110)
+            else
+                statusLabel.Text = chosenBeach .. "  |  equipped (toggle ON)"
+                statusLabel.TextColor3 = Color3.fromRGB(220, 180, 70)
+            end
+        else
+            statusLabel.Text = chosenBeach .. "  |  not equipped"
+            statusLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
+        end
+        setGearBtn.Text = "Beach: " .. chosenBeach
+    end
+
+    if uiEnabled then
+        toggleBtn.Text = "ON"
+        toggleBtn.BackgroundColor3 = speedActive and Color3.fromRGB(40, 150, 65) or Color3.fromRGB(120, 80, 40)
+    else
+        toggleBtn.Text = "OFF"
+        toggleBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 58)
+    end
+end
+
+local function createUI()
+    local old = player.PlayerGui:FindFirstChild("SpeedCNP_UI")
+    if old then old:Destroy() end
+
+    local sg = Instance.new("ScreenGui")
+    sg.Name = "SpeedCNP_UI"
+    sg.ResetOnSpawn = false
+    sg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    sg.Parent = player:WaitForChild("PlayerGui")
+
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.fromOffset(270, 145)
+    frame.Position = UDim2.fromScale(0.5, 0.1)
+    frame.AnchorPoint = Vector2.new(0.5, 0)
+    frame.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
+    frame.BorderSizePixel = 0
+    frame.Active = true
+    frame.Parent = sg
+
+    Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 10)
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = Color3.fromRGB(255, 55, 55)
+    stroke.Thickness = 1.5
+    stroke.Parent = frame
+
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, 0, 0, 28)
+    title.BackgroundColor3 = Color3.fromRGB(28, 28, 36)
+    title.BorderSizePixel = 0
+    title.Font = Enum.Font.GothamBold
+    title.TextSize = 13
+    title.TextColor3 = Color3.fromRGB(255, 255, 255)
+    title.Text = "Speed CNP  •  Beach Gear"
+    title.Parent = frame
+
+    Instance.new("UICorner", title).CornerRadius = UDim.new(0, 10)
+
+    local fix = Instance.new("Frame")
+    fix.Size = UDim2.new(1, 0, 0, 10)
+    fix.Position = UDim2.new(0, 0, 1, -10)
+    fix.BackgroundColor3 = Color3.fromRGB(28, 28, 36)
+    fix.BorderSizePixel = 0
+    fix.Parent = title
+
+    statusLabel = Instance.new("TextLabel")
+    statusLabel.Size = UDim2.new(1, -16, 0, 20)
+    statusLabel.Position = UDim2.fromOffset(8, 34)
+    statusLabel.BackgroundTransparency = 1
+    statusLabel.Font = Enum.Font.Gotham
+    statusLabel.TextSize = 12
+    statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+    statusLabel.TextColor3 = Color3.fromRGB(160, 160, 160)
+    statusLabel.Text = "No beach gear set"
+    statusLabel.Parent = frame
+
+    setGearBtn = Instance.new("TextButton")
+    setGearBtn.Size = UDim2.new(1, -16, 0, 28)
+    setGearBtn.Position = UDim2.fromOffset(8, 58)
+    setGearBtn.BackgroundColor3 = Color3.fromRGB(55, 55, 68)
+    setGearBtn.BorderSizePixel = 0
+    setGearBtn.Font = Enum.Font.GothamMedium
+    setGearBtn.TextSize = 13
+    setGearBtn.TextColor3 = Color3.fromRGB(220, 220, 220)
+    setGearBtn.Text = "Set Beach Gear"
+    setGearBtn.AutoButtonColor = true
+    setGearBtn.Parent = frame
+    Instance.new("UICorner", setGearBtn).CornerRadius = UDim.new(0, 7)
+
+    toggleBtn = Instance.new("TextButton")
+    toggleBtn.Size = UDim2.new(1, -16, 0, 32)
+    toggleBtn.Position = UDim2.fromOffset(8, 94)
+    toggleBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 58)
+    toggleBtn.BorderSizePixel = 0
+    toggleBtn.Font = Enum.Font.GothamBold
+    toggleBtn.TextSize = 14
+    toggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    toggleBtn.Text = "OFF"
+    toggleBtn.AutoButtonColor = false
+    toggleBtn.Parent = frame
+    Instance.new("UICorner", toggleBtn).CornerRadius = UDim.new(0, 7)
+
+    setGearBtn.MouseButton1Click:Connect(function()
+        captureMode = true
+        setGearBtn.Text = "Equip the beach gear now..."
+        setGearBtn.BackgroundColor3 = Color3.fromRGB(180, 120, 40)
+    end)
+
+    toggleBtn.MouseButton1Click:Connect(function()
+        uiEnabled = not uiEnabled
+        saveConfig()
+        refreshState()
+        updateUI()
+    end)
+
+    local dragging, dragStart, startPos
+    title.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = frame.Position
+        end
+    end)
+    title.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            local delta = input.Position - dragStart
+            frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end)
+
+    updateUI()
+end
+
+createUI()
+
+local function onCharacterAdded(character)
+    character.ChildAdded:Connect(function(child)
+        if child:IsA("Tool") and captureMode then
+            chosenBeach = child.Name
+            captureMode = false
+            setGearBtn.BackgroundColor3 = Color3.fromRGB(55, 55, 68)
+            saveConfig()
+            print("[Speed CNP] Beach gear saved:", chosenBeach)
+            refreshState()
+            updateUI()
+        end
+    end)
+
+    character.ChildRemoved:Connect(function(child)
+        if child:IsA("Tool") and child.Name == chosenBeach then
+            refreshState()
+            updateUI()
+        end
+    end)
+
+    task.defer(function()
+        refreshState()
+        updateUI()
+    end)
+end
+
+if player.Character then
+    onCharacterAdded(player.Character)
+end
+player.CharacterAdded:Connect(function(char)
+    stopGlitch()
+    onCharacterAdded(char)
+end)
+
+RunService.Heartbeat:Connect(function()
+    local was = speedActive
+    refreshState()
+    if was ~= speedActive then
+        updateUI()
+    end
+end)
+
+print("[Speed CNP] Loaded — gear name will be saved")
