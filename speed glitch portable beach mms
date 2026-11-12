@@ -3,6 +3,8 @@
     - Capture tool name (same method as gravity coils)
     - Saves the chosen gear name so it persists after leaving the game
     - Speed only runs while that exact tool is equipped
+    - Small UI + minimize to circle
+    - Dragging the circle no longer opens the UI
 ]]
 
 local Players = game:GetService("Players")
@@ -10,6 +12,7 @@ local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 local HttpService = game:GetService("HttpService")
+local TweenService = game:GetService("TweenService")
 
 local player = Players.LocalPlayer
 local camera = Workspace.CurrentCamera
@@ -24,6 +27,7 @@ local captureMode = false
 
 local uiEnabled = false
 local speedActive = false
+local isMinimized = false
 
 local offsetAmount = Vector3.new(0, 0, 5.2)
 local weightMass = 20.6
@@ -200,7 +204,8 @@ local function refreshState()
     end
 end
 
-local statusLabel, toggleBtn, setGearBtn
+-- ========== UI ==========
+local mainFrame, miniCircle, statusLabel, toggleBtn, setGearBtn, minBtn
 
 local function updateUI()
     if not statusLabel then return end
@@ -215,7 +220,7 @@ local function updateUI()
                 statusLabel.Text = chosenBeach .. "  |  ACTIVE"
                 statusLabel.TextColor3 = Color3.fromRGB(70, 220, 110)
             else
-                statusLabel.Text = chosenBeach .. "  |  equipped (toggle ON)"
+                statusLabel.Text = chosenBeach .. "  |  equipped"
                 statusLabel.TextColor3 = Color3.fromRGB(220, 180, 70)
             end
         else
@@ -232,6 +237,29 @@ local function updateUI()
         toggleBtn.Text = "OFF"
         toggleBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 58)
     end
+
+    if miniCircle then
+        if speedActive then
+            miniCircle.BackgroundColor3 = Color3.fromRGB(40, 150, 65)
+        elseif uiEnabled then
+            miniCircle.BackgroundColor3 = Color3.fromRGB(120, 80, 40)
+        else
+            miniCircle.BackgroundColor3 = Color3.fromRGB(40, 40, 48)
+        end
+    end
+end
+
+local function setMinimized(state)
+    isMinimized = state
+    if state then
+        mainFrame.Visible = false
+        miniCircle.Visible = true
+        miniCircle.Position = mainFrame.Position
+    else
+        miniCircle.Visible = false
+        mainFrame.Visible = true
+        mainFrame.Position = miniCircle.Position
+    end
 end
 
 local function createUI()
@@ -244,81 +272,105 @@ local function createUI()
     sg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     sg.Parent = player:WaitForChild("PlayerGui")
 
-    local frame = Instance.new("Frame")
-    frame.Size = UDim2.fromOffset(270, 145)
-    frame.Position = UDim2.fromScale(0.5, 0.1)
-    frame.AnchorPoint = Vector2.new(0.5, 0)
-    frame.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
-    frame.BorderSizePixel = 0
-    frame.Active = true
-    frame.Parent = sg
+    -- MAIN FRAME (smaller)
+    mainFrame = Instance.new("Frame")
+    mainFrame.Size = UDim2.fromOffset(210, 118)
+    mainFrame.Position = UDim2.fromScale(0.5, 0.12)
+    mainFrame.AnchorPoint = Vector2.new(0.5, 0)
+    mainFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
+    mainFrame.BorderSizePixel = 0
+    mainFrame.Active = true
+    mainFrame.Parent = sg
 
-    Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 10)
+    Instance.new("UICorner", mainFrame).CornerRadius = UDim.new(0, 9)
 
     local stroke = Instance.new("UIStroke")
     stroke.Color = Color3.fromRGB(255, 55, 55)
-    stroke.Thickness = 1.5
-    stroke.Parent = frame
+    stroke.Thickness = 1.3
+    stroke.Parent = mainFrame
 
     local title = Instance.new("TextLabel")
-    title.Size = UDim2.new(1, 0, 0, 28)
+    title.Size = UDim2.new(1, -28, 0, 24)
     title.BackgroundColor3 = Color3.fromRGB(28, 28, 36)
     title.BorderSizePixel = 0
     title.Font = Enum.Font.GothamBold
-    title.TextSize = 13
+    title.TextSize = 12
     title.TextColor3 = Color3.fromRGB(255, 255, 255)
-    title.Text = "Speed CNP  •  Beach Gear"
-    title.Parent = frame
+    title.Text = "Speed CNP"
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.Parent = mainFrame
 
-    Instance.new("UICorner", title).CornerRadius = UDim.new(0, 10)
+    local titlePad = Instance.new("UIPadding")
+    titlePad.PaddingLeft = UDim.new(0, 8)
+    titlePad.Parent = title
 
-    local fix = Instance.new("Frame")
-    fix.Size = UDim2.new(1, 0, 0, 10)
-    fix.Position = UDim2.new(0, 0, 1, -10)
-    fix.BackgroundColor3 = Color3.fromRGB(28, 28, 36)
-    fix.BorderSizePixel = 0
-    fix.Parent = title
+    Instance.new("UICorner", title).CornerRadius = UDim.new(0, 9)
+
+    local titleFix = Instance.new("Frame")
+    titleFix.Size = UDim2.new(1, 0, 0, 10)
+    titleFix.Position = UDim2.new(0, 0, 1, -10)
+    titleFix.BackgroundColor3 = Color3.fromRGB(28, 28, 36)
+    titleFix.BorderSizePixel = 0
+    titleFix.Parent = title
+
+    -- minimize button (−)
+    minBtn = Instance.new("TextButton")
+    minBtn.Size = UDim2.fromOffset(22, 20)
+    minBtn.Position = UDim2.new(1, -24, 0, 2)
+    minBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
+    minBtn.BorderSizePixel = 0
+    minBtn.Font = Enum.Font.GothamBold
+    minBtn.TextSize = 16
+    minBtn.TextColor3 = Color3.fromRGB(220, 220, 220)
+    minBtn.Text = "−"
+    minBtn.AutoButtonColor = true
+    minBtn.Parent = mainFrame
+    Instance.new("UICorner", minBtn).CornerRadius = UDim.new(0, 5)
+
+    minBtn.MouseButton1Click:Connect(function()
+        setMinimized(true)
+    end)
 
     statusLabel = Instance.new("TextLabel")
-    statusLabel.Size = UDim2.new(1, -16, 0, 20)
-    statusLabel.Position = UDim2.fromOffset(8, 34)
+    statusLabel.Size = UDim2.new(1, -12, 0, 16)
+    statusLabel.Position = UDim2.fromOffset(6, 28)
     statusLabel.BackgroundTransparency = 1
     statusLabel.Font = Enum.Font.Gotham
-    statusLabel.TextSize = 12
+    statusLabel.TextSize = 11
     statusLabel.TextXAlignment = Enum.TextXAlignment.Left
     statusLabel.TextColor3 = Color3.fromRGB(160, 160, 160)
     statusLabel.Text = "No beach gear set"
-    statusLabel.Parent = frame
+    statusLabel.Parent = mainFrame
 
     setGearBtn = Instance.new("TextButton")
-    setGearBtn.Size = UDim2.new(1, -16, 0, 28)
-    setGearBtn.Position = UDim2.fromOffset(8, 58)
-    setGearBtn.BackgroundColor3 = Color3.fromRGB(55, 55, 68)
+    setGearBtn.Size = UDim2.new(1, -12, 0, 24)
+    setGearBtn.Position = UDim2.fromOffset(6, 48)
+    setGearBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
     setGearBtn.BorderSizePixel = 0
     setGearBtn.Font = Enum.Font.GothamMedium
-    setGearBtn.TextSize = 13
+    setGearBtn.TextSize = 11
     setGearBtn.TextColor3 = Color3.fromRGB(220, 220, 220)
     setGearBtn.Text = "Set Beach Gear"
     setGearBtn.AutoButtonColor = true
-    setGearBtn.Parent = frame
-    Instance.new("UICorner", setGearBtn).CornerRadius = UDim.new(0, 7)
+    setGearBtn.Parent = mainFrame
+    Instance.new("UICorner", setGearBtn).CornerRadius = UDim.new(0, 6)
 
     toggleBtn = Instance.new("TextButton")
-    toggleBtn.Size = UDim2.new(1, -16, 0, 32)
-    toggleBtn.Position = UDim2.fromOffset(8, 94)
+    toggleBtn.Size = UDim2.new(1, -12, 0, 28)
+    toggleBtn.Position = UDim2.fromOffset(6, 78)
     toggleBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 58)
     toggleBtn.BorderSizePixel = 0
     toggleBtn.Font = Enum.Font.GothamBold
-    toggleBtn.TextSize = 14
+    toggleBtn.TextSize = 13
     toggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
     toggleBtn.Text = "OFF"
     toggleBtn.AutoButtonColor = false
-    toggleBtn.Parent = frame
-    Instance.new("UICorner", toggleBtn).CornerRadius = UDim.new(0, 7)
+    toggleBtn.Parent = mainFrame
+    Instance.new("UICorner", toggleBtn).CornerRadius = UDim.new(0, 6)
 
     setGearBtn.MouseButton1Click:Connect(function()
         captureMode = true
-        setGearBtn.Text = "Equip the beach gear now..."
+        setGearBtn.Text = "Equip beach gear..."
         setGearBtn.BackgroundColor3 = Color3.fromRGB(180, 120, 40)
     end)
 
@@ -329,12 +381,79 @@ local function createUI()
         updateUI()
     end)
 
+    -- MINI CIRCLE
+    miniCircle = Instance.new("TextButton")
+    miniCircle.Size = UDim2.fromOffset(36, 36)
+    miniCircle.Position = mainFrame.Position
+    miniCircle.AnchorPoint = Vector2.new(0.5, 0)
+    miniCircle.BackgroundColor3 = Color3.fromRGB(40, 40, 48)
+    miniCircle.BorderSizePixel = 0
+    miniCircle.Text = ""
+    miniCircle.AutoButtonColor = false
+    miniCircle.Visible = false
+    miniCircle.Parent = sg
+
+    Instance.new("UICorner", miniCircle).CornerRadius = UDim.new(1, 0)
+
+    local miniStroke = Instance.new("UIStroke")
+    miniStroke.Color = Color3.fromRGB(255, 55, 55)
+    miniStroke.Thickness = 1.5
+    miniStroke.Parent = miniCircle
+
+    local miniIcon = Instance.new("TextLabel")
+    miniIcon.Size = UDim2.fromScale(1, 1)
+    miniIcon.BackgroundTransparency = 1
+    miniIcon.Font = Enum.Font.GothamBold
+    miniIcon.TextSize = 14
+    miniIcon.TextColor3 = Color3.fromRGB(255, 255, 255)
+    miniIcon.Text = "S"
+    miniIcon.Parent = miniCircle
+
+    -- drag vs click logic for the circle
+    local mDragging = false
+    local mDragStart = nil
+    local mStartPos = nil
+    local hasDragged = false
+    local DRAG_THRESHOLD = 6 -- pixels
+
+    miniCircle.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            mDragging = true
+            hasDragged = false
+            mDragStart = input.Position
+            mStartPos = miniCircle.Position
+        end
+    end)
+
+    miniCircle.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            if mDragging then
+                mDragging = false
+                -- only open if we barely moved
+                if not hasDragged then
+                    setMinimized(false)
+                end
+            end
+        end
+    end)
+
+    UserInputService.InputChanged:Connect(function(input)
+        if mDragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            local delta = input.Position - mDragStart
+            if delta.Magnitude > DRAG_THRESHOLD then
+                hasDragged = true
+            end
+            miniCircle.Position = UDim2.new(mStartPos.X.Scale, mStartPos.X.Offset + delta.X, mStartPos.Y.Scale, mStartPos.Y.Offset + delta.Y)
+        end
+    end)
+
+    -- drag for main frame
     local dragging, dragStart, startPos
     title.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
             dragging = true
             dragStart = input.Position
-            startPos = frame.Position
+            startPos = mainFrame.Position
         end
     end)
     title.InputEnded:Connect(function(input)
@@ -345,7 +464,7 @@ local function createUI()
     UserInputService.InputChanged:Connect(function(input)
         if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
             local delta = input.Position - dragStart
-            frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+            mainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
         end
     end)
 
@@ -359,7 +478,7 @@ local function onCharacterAdded(character)
         if child:IsA("Tool") and captureMode then
             chosenBeach = child.Name
             captureMode = false
-            setGearBtn.BackgroundColor3 = Color3.fromRGB(55, 55, 68)
+            setGearBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
             saveConfig()
             print("[Speed CNP] Beach gear saved:", chosenBeach)
             refreshState()
@@ -396,4 +515,4 @@ RunService.Heartbeat:Connect(function()
     end
 end)
 
-print("[Speed CNP] Loaded — gear name will be saved")
+print("[Speed CNP] Loaded — drag circle no longer opens UI")
